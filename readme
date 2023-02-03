@@ -1,0 +1,68 @@
+This script uses multithreading to process multiple teams in parallel and displays the progress in percentage by using the Write-Progress cmdlet. The number of concurrent threads is controlled by the $maxThreads variable, which you can adjust as needed. Replace <email of the member to add as an owner> with the actual email of the member you want to add as an owner.
+
+
+
+# Load Microsoft Teams module
+Import-Module MicrosoftTeams
+
+# Connect to Microsoft Teams
+Connect-MicrosoftTeams
+
+# Get all Microsoft Teams in the tenant
+$teams = Get-Team
+
+# Create a collection of team objects
+$teamObjects = @()
+foreach ($team in $teams) {
+    $teamObjects += New-Object -TypeName PSObject -Property @{
+        Team = $team
+    }
+}
+
+# Define the maximum number of concurrent threads
+$maxThreads = 10
+
+# Create a semaphore to control the number of concurrent threads
+$semaphore = New-Object System.Threading.SemaphoreSlim $maxThreads
+
+# Keep track of the number of processed teams
+$processedTeams = 0
+
+# Loop through each team object
+foreach ($teamObject in $teamObjects) {
+    # Wait for a slot in the semaphore
+    $semaphore.Wait()
+
+    # Start a new thread to process the current team object
+    Start-ThreadJob -ScriptBlock {
+        param($teamObject, $semaphore, $processedTeams)
+
+        # Get the current team
+        $team = $teamObject.Team
+
+        # Get all owners of the current team
+        $teamOwners = Get-TeamUser -GroupId $team.GroupId -Role Owner
+
+        # Check if there are any owners with the desired email suffix
+        $desiredOwners = $teamOwners | Where-Object { $_.Email -like "*dfas.ohio.gov" }
+
+        # If there are owners with the desired email suffix, add the specified member as a team owner
+        if ($desiredOwners) {
+            Add-TeamUser -GroupId $team.GroupId -User "<email of the member to add as an owner>" -Role Owner
+        }
+
+        # Increment the number of processed teams
+        $processedTeams.Value++
+
+        # Release the slot in the semaphore
+        $semaphore.Release()
+    } -ArgumentList $teamObject, $semaphore, [ref]$processedTeams
+
+    # Display the progress in percentage
+    Write-Progress -Activity "Processing Teams" -Status "$($processedTeams) of $($teamObjects.Count) teams processed ($($processedTeams / $teamObjects.Count * 100)%)" -PercentComplete ($processedTeams / $teamObjects.Count * 100)
+}
+
+# Wait for all threads to finish
+while (Get-Job | Where-Object { $_.State -eq "Running" }) {
+    Start-Sleep -Seconds 1
+}
